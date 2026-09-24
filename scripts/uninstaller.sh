@@ -50,6 +50,66 @@ api_level_arch_detect
 
 ui_print "- Device platform: $ABI"
 
+#################
+# System Mode
+#
+# A System Mode installation modifies /system directly and never touches the
+# boot image, so the regular boot image restoration below would fail. Undo the
+# /system changes and fall through to the shared /data cleanup.
+#################
+
+MAGISKSYSTEMDIR=/system/etc/init/magisk
+if [ "$(grep_prop SYSTEMMODE $MAGISKSYSTEMDIR/config)" = "true" ]; then
+  ui_print "- System Mode installation detected"
+  [ -f $MAGISKSYSTEMDIR/system_mode.sh ] && . $MAGISKSYSTEMDIR/system_mode.sh
+
+  blockdev --setrw /dev/block/mapper/system$SLOT 2>/dev/null
+  mount -o rw,remount / 2>/dev/null
+  mount -o rw,remount /system 2>/dev/null
+
+  if command -v cleanup_system_installation >/dev/null 2>&1; then
+    cleanup_system_installation
+  else
+    rm -rf $MAGISKSYSTEMDIR $MAGISKSYSTEMDIR.rc
+    [ -f /system/etc/init/bootanim.rc.gz ] && gzip -kdf /system/etc/init/bootanim.rc.gz
+  fi
+
+  if command -v installer_cleanup >/dev/null 2>&1; then
+    installer_cleanup
+  else
+    mount -o ro,remount /
+  fi
+
+  ui_print "- Removing Magisk files"
+  rm -rf \
+  /cache/*magisk* /cache/unblock /data/*magisk* /data/cache/*magisk* /data/property/*magisk* \
+  /data/Magisk.apk /data/busybox /data/custom_ramdisk_patch.sh /data/adb/*magisk* \
+  /data/adb/post-fs-data.d /data/adb/service.d /data/adb/modules* \
+  /data/unencrypted/magisk /metadata/magisk /metadata/watchdog/magisk /persist/magisk /mnt/vendor/persist/magisk
+
+  # Remove the addon.d survival script; unlike the boot patch path, /system is
+  # still remounted read-write here.
+  rm -f /system/addon.d/99-magisk.sh
+
+  if $BOOTMODE; then
+    ui_print "********************************************"
+    ui_print " The Magisk app will uninstall itself, and"
+    ui_print " the device will reboot after a few seconds"
+    ui_print "********************************************"
+    (sleep 8; /system/bin/reboot)&
+  else
+    ui_print "********************************************"
+    ui_print " The Magisk app will not be uninstalled"
+    ui_print " Please uninstall it manually after reboot"
+    ui_print "********************************************"
+    recovery_cleanup
+    ui_print "- Done"
+  fi
+
+  rm -rf $TMPDIR
+  exit 0
+fi
+
 BINDIR=$INSTALLER/lib/$ABI
 cd $BINDIR
 for file in lib*.so; do mv "$file" "${file:3:${#file}-6}"; done

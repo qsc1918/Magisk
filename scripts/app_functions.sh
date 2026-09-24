@@ -232,6 +232,13 @@ app_init() {
   run_migrations >/dev/null
   check_encryption
 
+  # A SHA1 in the Magisk config means the installed Magisk came from a patched
+  # boot image, i.e. we are running systemless. System Mode installations have
+  # no SHA1, which is what allows the app to offer "install to /system".
+  SHA1=$(grep_prop SHA1 $MAGISKTMP/.magisk/config)
+  BOOTIMAGE_PATCHED=false
+  [ ! -z "$SHA1" ] && BOOTIMAGE_PATCHED=true
+
   # Dump variables
   printvar SLOT
   printvar SYSTEM_AS_ROOT
@@ -244,6 +251,7 @@ app_init() {
   printvar KEEPVERITY
   printvar KEEPFORCEENCRYPT
   printvar VENDORBOOT
+  printvar BOOTIMAGE_PATCHED
 }
 
 export BOOTMODE=true

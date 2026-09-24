@@ -24,7 +24,7 @@ import com.topjohnwu.magisk.core.R as CoreR
 
 class InstallViewModel(svc: NetworkService) : BaseViewModel() {
 
-    enum class Method { NONE, PATCH, DIRECT, INACTIVE_SLOT, DOWNLOAD }
+    enum class Method { NONE, PATCH, DIRECT, SYSTEM, INACTIVE_SLOT, DOWNLOAD }
 
     data class UiState(
         val method: Method = Method.NONE,
@@ -33,9 +33,14 @@ class InstallViewModel(svc: NetworkService) : BaseViewModel() {
         val requestFilePicker: Boolean = false,
         val showSecondSlotWarning: Boolean = false,
         val showDownloadDialog: Boolean = false,
+        val showSystemInstallWarning: Boolean = false,
     )
 
     val isRooted get() = Info.isRooted
+    // System Mode persists an already available root into /system instead of
+    // patching the boot image, so it is only meaningful when we are rooted but
+    // the running Magisk did not come from a patched boot image.
+    val allowSystemInstall get() = isRooted && !Info.isBootPatched
     val skipOptions = Info.isEmulator || (Info.isSAR && !Info.isFDE && Info.ramdisk)
     val noSecondSlot = !isRooted || !Info.isAB || Info.isEmulator
 
@@ -72,6 +77,9 @@ class InstallViewModel(svc: NetworkService) : BaseViewModel() {
             Method.INACTIVE_SLOT -> {
                 _uiState.update { it.copy(showSecondSlotWarning = true) }
             }
+            Method.SYSTEM -> {
+                _uiState.update { it.copy(showSystemInstallWarning = true) }
+            }
             Method.DOWNLOAD -> {
                 _uiState.update { it.copy(showDownloadDialog = true) }
             }
@@ -85,6 +93,10 @@ class InstallViewModel(svc: NetworkService) : BaseViewModel() {
 
     fun onSecondSlotWarningConsumed() {
         _uiState.update { it.copy(showSecondSlotWarning = false) }
+    }
+
+    fun onSystemInstallWarningConsumed() {
+        _uiState.update { it.copy(showSystemInstallWarning = false) }
     }
 
     fun onDownloadDialogConsumed() {
@@ -117,6 +129,9 @@ class InstallViewModel(svc: NetworkService) : BaseViewModel() {
             ))
             Method.DIRECT -> navigateTo(Route.Flash(
                 action = Const.Value.FLASH_MAGISK
+            ))
+            Method.SYSTEM -> navigateTo(Route.Flash(
+                action = Const.Value.FLASH_MAGISK_SYSTEM
             ))
             Method.INACTIVE_SLOT -> navigateTo(Route.Flash(
                 action = Const.Value.FLASH_INACTIVE_SLOT

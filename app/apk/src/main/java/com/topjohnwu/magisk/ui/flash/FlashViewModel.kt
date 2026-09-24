@@ -93,6 +93,11 @@ class FlashViewModel : BaseViewModel() {
                             MagiskInstaller.Direct(outItems, logItems).exec()
                     })
                 }
+                Const.Value.FLASH_MAGISK_SYSTEM -> {
+                    onResult(withContext(Dispatchers.IO) {
+                        MagiskInstaller.System(outItems, logItems).exec()
+                    })
+                }
                 Const.Value.FLASH_INACTIVE_SLOT -> {
                     _showReboot.value = false
                     onResult(withContext(Dispatchers.IO) {

@@ -104,6 +104,12 @@ SePolicy SePolicy::from_file(::Utf8CStr file) noexcept {
     policy_file_t pf;
     policy_file_init(&pf);
     auto fp = xopen_file(file.data(), "re");
+    if (!fp) {
+        // xopen_file already logged the failure; guard so that a missing or
+        // unreadable policy file reports an error instead of dereferencing a
+        // null FILE in policydb_read.
+        return {};
+    }
     pf.fp = fp.get();
     pf.type = PF_USE_STDIO;
 

@@ -73,6 +73,10 @@ fun InstallDialog(
     val secondSlotTitle = stringResource(android.R.string.dialog_alert_title)
     val secondSlotMsg = stringResource(CoreR.string.install_inactive_slot_msg)
 
+    val systemInstallDialog = rememberConfirmDialog()
+    val systemInstallTitle = stringResource(android.R.string.dialog_alert_title)
+    val systemInstallMsg = stringResource(CoreR.string.direct_install_system_msg)
+
     LaunchedEffect(installUiState.requestFilePicker) {
         if (installUiState.requestFilePicker) {
             filePicker.launch("*/*")
@@ -84,6 +88,19 @@ fun InstallDialog(
         if (installUiState.showSecondSlotWarning) {
             val result = secondSlotDialog.awaitConfirm(title = secondSlotTitle, content = secondSlotMsg)
             installVm.onSecondSlotWarningConsumed()
+            if (result == ConfirmResult.Confirmed) {
+                installVm.install()
+            }
+        }
+    }
+
+    LaunchedEffect(installUiState.showSystemInstallWarning) {
+        if (installUiState.showSystemInstallWarning) {
+            val result = systemInstallDialog.awaitConfirm(
+                title = systemInstallTitle,
+                content = systemInstallMsg
+            )
+            installVm.onSystemInstallWarningConsumed()
             if (result == ConfirmResult.Confirmed) {
                 installVm.install()
             }
@@ -182,6 +199,16 @@ fun InstallDialog(
                                     onDismiss()
                                     installVm.selectMethod(InstallViewModel.Method.DIRECT)
                                     installVm.install()
+                                },
+                            )
+                        }
+
+                        if (installVm.allowSystemInstall) {
+                            SettingsArrow(
+                                title = stringResource(CoreR.string.direct_install_system),
+                                onClick = {
+                                    onDismiss()
+                                    installVm.selectMethod(InstallViewModel.Method.SYSTEM)
                                 },
                             )
                         }

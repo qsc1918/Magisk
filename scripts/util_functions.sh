@@ -751,6 +751,91 @@ install_module() {
 }
 
 ##########
+# System Mode helpers
+#
+# Required by scripts/system_mode.sh, which installs Magisk by directly
+# modifying the /system partition on devices where the boot image cannot be
+# patched (Android emulators, Waydroid, redroid and similar containers).
+##########
+
+# Whether / is a ramdisk (rootfs) rather than a real block device
+is_rootfs() {
+  local mnt_type
+  if ! $BOOTMODE && [ -d /system_root ] && mountpoint /system_root; then
+    return 1
+  fi
+  mnt_type="$(head -1 /proc/self/mountinfo | awk '{ printf $9 }')"
+  if $BOOTMODE && [ "$mnt_type" = "rootfs" -o "$mnt_type" = "tmpfs" ]; then
+    return 0
+  fi
+  return 1
+}
+
+# Create a block device node for the filesystem mounted at $2
+mkblknode() {
+  local blk_mm="$(mountpoint -d "$2" | sed "s/:/ /g")"
+  mknod "$1" -m 666 b $blk_mm
+}
+
+# Last remount_check outcome, reported by warn_system_ro()
+REMOUNT_FAIL=
+
+warn_system_ro() {
+  ui_print "! System partition is read-only"
+  [ -n "$REMOUNT_FAIL" ] && ui_print "! reason: $REMOUNT_FAIL"
+  return 1
+}
+
+# Remount a partition and verify that the requested mode actually took effect
+remount_check() {
+  local mode="$1"
+  local part="$(realpath "$2" 2>/dev/null)"
+  # realpath prints nothing for a path that does not exist; fall back so that
+  # diagnostics still name the mount point we actually tried.
+  [ -z "$part" ] && part="$2"
+  local ignore_not_exist="$3"
+  local i opts
+  REMOUNT_FAIL=
+  if ! grep -q " $part " /proc/mounts && [ ! -z "$ignore_not_exist" ]; then
+    return "$ignore_not_exist"
+  fi
+  local rc=0
+  mount -o "$mode,remount" "$part" || rc=$?
+  if [ $rc -ne 0 ]; then
+    REMOUNT_FAIL="$part: 'mount -o $mode,remount' failed (rc=$rc)"
+    return 1
+  fi
+  local IFS=$'\t\n ,'
+  for i in $(cat /proc/mounts | grep " $part " | awk '{ print $4 }'); do
+    test "$i" = "$mode" && return 0
+  done
+  opts=$(grep " $part " /proc/mounts | awk '{ print $4 }' | tr '\n' ' ')
+  if [ -z "$opts" ]; then
+    REMOUNT_FAIL="$part: mount succeeded but the mount point is absent from /proc/mounts"
+  else
+    REMOUNT_FAIL="$part: mount succeeded but '$mode' is not in the options [$opts]"
+  fi
+  return 1
+}
+
+force_bind_mount() {
+  local err
+  if ! err=$(mount -o bind,private "$1" "$2" 2>&1); then
+    ui_print "! bind mount failed: $1 -> $2 ($err)"
+  fi
+  if ! err=$(mount -o rw,remount "$2" 2>&1); then
+    ui_print "! remount rw failed: $2 ($err)"
+  fi
+  remount_check rw "$2" || warn_system_ro
+}
+
+# Print a random alphanumeric string with length in [$1, $2]
+random_str() {
+  local FROM="$1" TO="$2"
+  tr -dc A-Za-z0-9 </dev/urandom | head -c $(($FROM+$(($RANDOM%$(($TO-$FROM+1))))))
+}
+
+##########
 # Presets
 ##########
 

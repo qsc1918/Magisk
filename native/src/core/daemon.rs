@@ -53,6 +53,22 @@ pub const fn to_user_id(uid: i32) -> i32 {
     uid / AID_USER_OFFSET
 }
 
+/// Set the SELinux context of the current process.
+///
+/// Returns whether the context was successfully written. Failure is never
+/// fatal and deliberately not logged as an error: with SELinux disabled, or
+/// when the requested domain is not defined by the current policy, callers
+/// either fall back to another domain or simply carry on.
+pub fn setcon(con: &Utf8CStr) -> bool {
+    let Ok(mut current) =
+        cstr!("/proc/self/attr/current").open(OFlag::O_WRONLY | OFlag::O_CLOEXEC)
+    else {
+        return false;
+    };
+    // The kernel interface requires the NUL terminator to be included
+    current.write_all(con.as_bytes_with_nul()).is_ok()
+}
+
 #[derive(Default)]
 pub struct MagiskD {
     pub sql_connection: Mutex<Option<Sqlite3>>,
@@ -296,12 +312,7 @@ fn daemon_entry() {
     setsid().log_ok();
 
     // Make sure the current context is magisk
-    if let Ok(mut current) =
-        cstr!("/proc/self/attr/current").open(OFlag::O_WRONLY | OFlag::O_CLOEXEC)
-    {
-        let con = cstr!(MAGISK_PROC_CON);
-        current.write_all(con.as_bytes_with_nul()).log_ok();
-    }
+    setcon(cstr!(MAGISK_PROC_CON));
 
     start_log_daemon();
     magisk_logging();

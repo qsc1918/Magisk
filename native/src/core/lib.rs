@@ -37,6 +37,7 @@ mod mount;
 mod package;
 mod resetprop;
 mod selinux;
+mod setup;
 mod socket;
 mod su;
 mod thread;

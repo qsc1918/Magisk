@@ -66,6 +66,9 @@ class ShellInit : Shell.Initializer() {
             add(context.assets.open("app_functions.sh"))
             if (shell.isRoot) {
                 add(context.assets.open("util_functions.sh"))
+                // System Mode install (direct /system modification). Load after
+                // util_functions.sh so it wins for any shared helper names.
+                add(context.assets.open("system_mode.sh"))
             }
         }.exec()
 

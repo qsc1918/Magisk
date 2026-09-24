@@ -1,11 +1,14 @@
-use crate::consts::{APPLET_NAMES, MAGISK_VER_CODE, MAGISK_VERSION, POST_FS_DATA_WAIT_TIME};
-use crate::daemon::connect_daemon;
+use crate::consts::{
+    APPLET_NAMES, MAGISK_PROC_CON, MAGISK_VER_CODE, MAGISK_VERSION, POST_FS_DATA_WAIT_TIME,
+};
+use crate::daemon::{connect_daemon, setcon};
 use crate::ffi::{RequestCode, denylist_cli, get_magisk_tmp, install_module, unlock_blocks};
 use crate::mount::find_preinit_device;
 use crate::selinux::restorecon;
+use crate::setup::setup_sbin;
 use crate::socket::{Decodable, Encodable};
 use argh::FromArgs;
-use base::{CmdArgs, EarlyExitExt, LoggedResult, Utf8CString, argh, clone_attr};
+use base::{CmdArgs, EarlyExitExt, LoggedResult, Utf8CString, argh, clone_attr, cstr};
 use nix::poll::{PollFd, PollFlags, PollTimeout};
 use std::ffi::c_char;
 use std::os::fd::AsFd;
@@ -39,6 +42,14 @@ Advanced Options (Internal APIs):
    --path                    print Magisk tmpfs mount path
    --denylist ARGS           denylist config CLI
    --preinit-device          resolve a device to store preinit files
+
+System Mode Options:
+   --auto-selinux CMD        run CMD with the process context switched to
+                             u:r:magisk:s0 (fallback u:r:su:s0) first
+   --setup-sbin SRCDIR [DST]
+                             mount a tmpfs on DST (default /sbin), install the
+                             Magisk binaries from SRCDIR and set up the Magisk
+                             tmpfs layout without magiskinit
 
 Available applets:
      {}
@@ -76,6 +87,7 @@ enum MagiskAction {
     Path(PathCmd),
     DenyList(DenyList),
     PreInitDevice(PreInitDevice),
+    SetupSbin(SetupSbin),
 }
 
 #[derive(FromArgs)]
@@ -180,6 +192,16 @@ struct DenyList {
 #[argh(subcommand, name = "--preinit-device")]
 struct PreInitDevice {}
 
+#[derive(FromArgs)]
+#[argh(subcommand, name = "--setup-sbin")]
+struct SetupSbin {
+    #[argh(positional)]
+    src: Utf8CString,
+
+    #[argh(positional)]
+    dst: Option<Utf8CString>,
+}
+
 impl MagiskAction {
     fn exec(self) -> LoggedResult<i32> {
         use MagiskAction::*;
@@ -280,8 +302,38 @@ impl MagiskAction {
                     println!("{name}");
                 }
             }
+            SetupSbin(self::SetupSbin { src, dst }) => {
+                let dst = dst.unwrap_or_else(|| Utf8CString::from("/sbin"));
+                if !setup_sbin(&src, &dst) {
+                    return Ok(1);
+                }
+            }
         };
         Ok(0)
+    }
+}
+
+/// Switch the process context before running the real command.
+///
+/// This is the `--auto-selinux` prefix flag ported from Magisk Delta
+/// (core/magisk.cpp). Magisk's own sepolicy rules mark the `magisk` domain as
+/// permissive, so moving ourselves into it bypasses SELinux restrictions;
+/// on very early boot (first System Mode boot) the `magisk` type may not exist
+/// yet in the live policy, in which case we fall back to `u:r:su:s0`, which is
+/// equally unconstrained on engineering builds and emulators.
+///
+/// Failures are deliberately silent: with SELinux disabled the write simply
+/// fails and the command must still run.
+fn auto_selinux() {
+    if setcon(cstr!(MAGISK_PROC_CON)) || setcon(cstr!("u:r:su:s0")) {
+        // Report the context we ended up in, as Delta does
+        use std::io::Read;
+        if let Ok(mut f) = cstr!("/proc/self/attr/current").open(nix::fcntl::OFlag::O_RDONLY) {
+            let mut s = String::new();
+            if f.read_to_string(&mut s).is_ok() {
+                eprintln!("SeLinux context: {}", s.trim_end_matches('\0').trim());
+            }
+        }
     }
 }
 
@@ -291,6 +343,19 @@ pub fn magisk_main(argc: i32, argv: *mut *mut c_char) -> i32 {
         exit(1);
     }
     let mut cmds = CmdArgs::new(argc, argv.cast()).0;
+
+    // Handle --auto-selinux before argh sees the arguments: it is a prefix
+    // flag that may precede any real command, which the subcommand model of
+    // argh cannot express.
+    while cmds.len() > 1 && cmds[1] == "--auto-selinux" {
+        cmds.remove(1);
+        auto_selinux();
+    }
+
+    if cmds.len() < 2 {
+        print_usage();
+        exit(1);
+    }
     // We need to manually inject "--" so that all actions can be treated as subcommands
     cmds.insert(1, "--");
     let cli = Cli::from_args(&cmds[..1], &cmds[1..]).on_early_exit(print_usage);

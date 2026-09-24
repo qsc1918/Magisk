@@ -1,9 +1,10 @@
 use crate::ffi::{BootConfig, MagiskInit, backup_init, magisk_proxy_main};
 use crate::logging::setup_klog;
 use crate::mount::is_rootfs;
+use crate::selinux::patch_sepol;
 use crate::twostage::hexpatch_init_for_second_stage;
 use base::libc::{basename, getpid, mount, umask};
-use base::{LibcReturn, LoggedResult, ResultExt, cstr, info, raw_cstr};
+use base::{LibcReturn, LoggedResult, ResultExt, Utf8CStr, cstr, info, raw_cstr};
 use std::ffi::{CStr, c_char};
 use std::ptr::null;
 
@@ -189,6 +190,23 @@ pub unsafe extern "C" fn main(
 
         if CStr::from_ptr(name) == c"magisk" {
             return magisk_proxy_main(argc, argv);
+        }
+
+        // magiskinit has no general CLI parser, so the offline sepolicy patch
+        // is a standalone branch. It MUST be handled before the getpid() == 1
+        // check below, because it is invoked as a normal process during
+        // Magisk installation, not as init.
+        if argc > 2 && CStr::from_ptr(*argv.add(1)) == c"--patch-sepol" {
+            let Ok(in_file) = Utf8CStr::from_ptr(*argv.add(2)) else {
+                return 1;
+            };
+            // Without an explicit output file the patch is applied in place
+            let out_file = if argc > 3 {
+                Utf8CStr::from_ptr(*argv.add(3)).unwrap_or(in_file)
+            } else {
+                in_file
+            };
+            return patch_sepol(in_file, out_file);
         }
 
         if getpid() == 1 {

@@ -59,6 +59,32 @@ fn mock_file(target: &Utf8CStr, mock: &Utf8CStr) -> LoggedResult<()> {
     mock.bind_mount_to(target, false).log()
 }
 
+/// Offline patch of a monolithic sepolicy file.
+///
+/// Loads `in_file`, applies the built-in Magisk rules and dumps the result to
+/// `out_file` (`out_file` may equal `in_file`). This is what System Mode uses
+/// to seed a fresh boot with the Magisk domains and type transitions, so that
+/// the `exec u:r:magisk:s0 ...` lines in the injected init rc are permitted
+/// before the live policy patch has had a chance to run.
+///
+/// Ported from Magisk Delta's `magiskinit --patch-sepol` (init/selinux.cpp).
+/// Returns 0 on success, 1 if the input cannot be read, 2 if the output cannot
+/// be written.
+pub fn patch_sepol(in_file: &Utf8CStr, out_file: &Utf8CStr) -> i32 {
+    let mut sepol = SePolicy::from_file(in_file);
+    if sepol._impl.is_null() {
+        error!("Cannot load policy from {}", in_file);
+        return 1;
+    }
+    sepol.magisk_rules();
+    if !sepol.to_file(out_file) {
+        error!("Cannot dump policy to {}", out_file);
+        return 2;
+    }
+    info!("Patched sepolicy: {} -> {}", in_file, out_file);
+    0
+}
+
 impl MagiskInit {
     pub(crate) fn handle_sepolicy(&mut self) {
         self.handle_sepolicy_impl().ok();

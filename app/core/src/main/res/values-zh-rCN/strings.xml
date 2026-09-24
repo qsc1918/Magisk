@@ -42,6 +42,8 @@
     <string name="install_start">开始</string>
     <string name="manager_download_install">立即安装</string>
     <string name="direct_install">直接安装（推荐）</string>
+    <string name="direct_install_system">直接安装（直接修改 /system）</string>
+    <string name="direct_install_system_msg">此方式会把 Magisk 直接写入 /system 分区，而不是修补 boot 映像。\n它适用于无法修补 boot 映像的 Android 模拟器与容器化 Android 环境。\n\n如果安装中途失败，设备可能无法开机，届时需要重新刷入 ROM。\n是否继续？</string>
     <string name="install_inactive_slot">安装到未使用的槽位（OTA 后）</string>
     <string name="install_inactive_slot_msg">将在重启后强制切换到另一个槽位！注意只能在 OTA 更新完成后的重启之前使用。</string>
     <string name="setup_title">修复安装</string>

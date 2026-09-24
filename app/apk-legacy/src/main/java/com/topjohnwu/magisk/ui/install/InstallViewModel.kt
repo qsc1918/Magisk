@@ -24,6 +24,7 @@ import com.topjohnwu.magisk.core.repository.NetworkService
 import com.topjohnwu.magisk.databinding.set
 import com.topjohnwu.magisk.dialog.DownloadDialog
 import com.topjohnwu.magisk.dialog.SecondSlotWarningDialog
+import com.topjohnwu.magisk.dialog.SystemModeWarningDialog
 import com.topjohnwu.magisk.events.GetContentEvent
 import com.topjohnwu.magisk.ui.flash.FlashFragment
 import io.noties.markwon.Markwon
@@ -39,6 +40,10 @@ import com.topjohnwu.magisk.core.R as CoreR
 class InstallViewModel(svc: NetworkService, markwon: Markwon) : BaseViewModel() {
 
     val isRooted get() = Info.isRooted
+    // System Mode persists an already available root into /system instead of
+    // patching the boot image, so it is only meaningful when we are rooted but
+    // the running Magisk did not come from a patched boot image.
+    val allowSystemInstall get() = isRooted && !Info.isBootPatched
     val skipOptions = Info.isEmulator || (Info.isSAR && !Info.isFDE && Info.ramdisk)
     val noSecondSlot = !isRooted || !Info.isAB || Info.isEmulator
 
@@ -69,6 +74,9 @@ class InstallViewModel(svc: NetworkService, markwon: Markwon) : BaseViewModel() 
                 }
                 R.id.method_inactive_slot -> {
                     SecondSlotWarningDialog().show()
+                }
+                R.id.method_direct_system -> {
+                    SystemModeWarningDialog(onCancel = { resetMethod() }).show()
                 }
             }
         }
@@ -123,6 +131,7 @@ class InstallViewModel(svc: NetworkService, markwon: Markwon) : BaseViewModel() 
             R.id.method_patch -> FlashFragment.patch(data.value!!).navigate(true)
             R.id.method_download -> FlashFragment.download(data.value!!).navigate(true)
             R.id.method_direct -> FlashFragment.flash(false).navigate(true)
+            R.id.method_direct_system -> FlashFragment.flashSystem().navigate(true)
             R.id.method_inactive_slot -> FlashFragment.flash(true).navigate(true)
             else -> error("Unknown value")
         }

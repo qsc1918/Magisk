@@ -7,6 +7,22 @@
 #
 ########################################################
 
+# Toggled by install_addond_system() when Magisk was installed in System Mode
+SYSTEMINSTALL=false
+MAGISKSYSTEMDIR=/system/etc/init/magisk
+
+system_install() {
+  # Prefer the utilities installed on /system; fall back to the /data copy when
+  # a ROM update wiped them but left /data/adb/magisk intact.
+  if [ -f $MAGISKSYSTEMDIR/system_mode.sh ]; then
+    . $MAGISKSYSTEMDIR/system_mode.sh
+    direct_install_system $MAGISKSYSTEMDIR
+  else
+    . $MAGISKBIN/system_mode.sh
+    direct_install_system $MAGISKBIN
+  fi
+}
+
 trampoline() {
   mount /data 2>/dev/null
   if [ -f $MAGISKBIN/addon.d.sh ]; then
@@ -42,9 +58,14 @@ trampoline() {
   exit 1
 }
 
-# Always use the script in /data
+# Always use the script in /data, except for a System Mode installation, which
+# keeps its own self-contained copy in /system/addon.d so that it survives even
+# if /data is wiped or /data/adb/magisk is gone.
 MAGISKBIN=/data/adb/magisk
-[ "$0" = $MAGISKBIN/addon.d.sh ] || trampoline "$@"
+case "$0" in
+  /system/addon.d/*) ;;
+  *) [ "$0" = $MAGISKBIN/addon.d.sh ] || trampoline "$@" ;;
+esac
 
 V1_FUNCS=/tmp/backuptool.functions
 V2_FUNCS=/postinstall/tmp/backuptool.functions
@@ -107,15 +128,24 @@ main() {
     fi
   fi
 
-  find_boot_image
-  [ -z $BOOTIMAGE ] && abort "! Unable to detect target image"
-  ui_print "- Target image: $BOOTIMAGE"
+  # A System Mode installation has no boot image to find: it lives entirely on
+  # /system, so it must not go through the boot patching path.
+  if [ ! "$SYSTEMINSTALL" = "true" ]; then
+    find_boot_image
+    [ -z $BOOTIMAGE ] && abort "! Unable to detect target image"
+    ui_print "- Target image: $BOOTIMAGE"
 
-  api_level_arch_detect
-  ui_print "- Device platform: $ABI"
+    api_level_arch_detect
+    ui_print "- Device platform: $ABI"
 
-  remove_system_su
-  install_magisk
+    remove_system_su
+    install_magisk
+  else
+    ui_print "- System Mode installation detected"
+    api_level_arch_detect
+    ui_print "- Device platform: $ABI"
+    system_install
+  fi
 
   # Cleanups
   cd /
@@ -135,7 +165,7 @@ case "$1" in
   ;;
   pre-backup)
     # Back up PREINITDEVICE from existing partition before OTA on A-only devices
-    if ! $backuptool_ab; then
+    if ! $backuptool_ab && [ ! "$SYSTEMINSTALL" = "true" ]; then
       initialize
       # Suppress ui_print for this stage
       ui_print() { return; }
@@ -154,6 +184,12 @@ case "$1" in
   ;;
   post-restore)
     initialize
+    # Detect a System Mode installation at runtime as well: some ROMs replace
+    # addon.d scripts without preserving our edit, and a fresh script must still
+    # take the /system path instead of trying to patch a boot image.
+    if [ "$(grep_prop SYSTEMMODE $MAGISKSYSTEMDIR/config)" = "true" ]; then
+      SYSTEMINSTALL=true
+    fi
     if $backuptool_ab; then
       su=sh
       $BOOTMODE && su=su
@@ -165,6 +201,9 @@ case "$1" in
   ;;
   addond-v2)
     initialize
+    if [ "$(grep_prop SYSTEMMODE $MAGISKSYSTEMDIR/config)" = "true" ]; then
+      SYSTEMINSTALL=true
+    fi
     main
   ;;
 esac

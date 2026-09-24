@@ -120,6 +120,12 @@ class FlashFragment : BaseFragment<FragmentFlashMd2Binding>(), MenuProvider {
             action = flashType(isSecondSlot)
         )
 
+        /* System Mode: install Magisk by modifying /system directly */
+
+        fun flashSystem() = MainDirections.actionFlashFragment(
+            action = Const.Value.FLASH_MAGISK_SYSTEM
+        )
+
         /* Patching is understood as injecting img files with magisk */
 
         fun patch(uri: Uri) = MainDirections.actionFlashFragment(

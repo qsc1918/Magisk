@@ -42,6 +42,8 @@
     <string name="install_start">Let\'s go</string>
     <string name="manager_download_install">Press to download and install</string>
     <string name="direct_install">Direct install (Recommended)</string>
+    <string name="direct_install_system">Direct install (modify /system directly)</string>
+    <string name="direct_install_system_msg">This will write Magisk into your /system partition instead of patching the boot image.\nIt is intended for Android emulators and containerized Android, where the boot image cannot be patched.\n\nIf the installation fails halfway through, your device may not boot and you will have to reflash your ROM.\nContinue?</string>
     <string name="install_inactive_slot">Install to inactive slot (After OTA)</string>
     <string name="install_inactive_slot_msg">Your device will be FORCED to boot to the current inactive slot after a reboot!\nOnly use this option after OTA is done.\nContinue?</string>
     <string name="setup_title">Additional setup</string>
