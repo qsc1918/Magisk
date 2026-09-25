@@ -18,6 +18,10 @@ Waydroid / redroid 等无法 patch boot 的环境）**已经完整移植到官�
 Native / Shell / App（Compose + legacy）三层接通，**在真实 Android 12 模拟器上端到端验证通过**
 （安装 → 重启 → `magiskd` 以 root 运行 → 模块与 su 授权可用 → 无 bootloop）。
 
+第二轮（2026-09-25）修掉了"装完 App 显示 Magisk 未安装 / su 用不了 / 弹需要修复运行环境"
+的两个缺陷（`.magisk/device` 权限位、`env_check` preinit 误报），并在 App 路径上重新端到端验证。
+细节见 `docs/system_mode_verification.md` §8。
+
 尚未实测的部分见 §8。
 
 - 目标仓库：`D:\Magisk`（官方 topjohnwu/Magisk，HEAD `aed0261c3`）
@@ -26,17 +30,25 @@ Native / Shell / App（Compose + legacy）三层接通，**在真实 Android 12 
 
 ---
 
-## 1. 编译与检查（全部必须加 `scripts/env.py` 前缀）
+## 1. 编译与检查（Windows 上必须写成 `python scripts/env.py python ./build.py ...`）
 
 ```bash
-scripts/env.py ./build.py native          # magisk / magiskinit / magiskboot / magiskpolicy
-scripts/env.py ./build.py app             # out/app-debug.apk      (Compose UI)
-scripts/env.py ./build.py app-legacy      # out/apk-legacy-debug.apk (XML/DataBinding UI)
-scripts/env.py ./build.py clippy          # Rust lint，当前零警告
-node <脚本>                               # shell 脚本没有 bash 可用时，用自写的配平检查
+# Windows / PowerShell（本机）—— 注意多出来的 "python"，见下方警告
+python scripts/env.py python ./build.py native       # magisk / magiskinit / magiskboot / magiskpolicy
+python scripts/env.py python ./build.py app          # out/app-debug.apk      (Compose UI)
+python scripts/env.py python ./build.py app-legacy   # out/apk-legacy-debug.apk (XML/DataBinding UI)
+python scripts/env.py python ./build.py clippy       # Rust lint，当前零警告
+
+# POSIX / MSYS bash（文档里原本的写法）
+scripts/env.py ./build.py native
 ```
 
 当前状态：以上四条**全部 exit=0**，clippy 零警告。
+
+> ⚠️ **Windows 上不要直接执行 `scripts/env.py ...`**：`.py` 的文件关联是 PyCharm，
+> 命令会变成"用 IDE 打开 env.py"——终端里看起来 exit=0，其实一行代码都没编译，
+> 而且会把用户的 IDE 拉起来。必须显式加 `python`，并且让 env.py 用 `python` 去跑
+> `build.py`（`build.py` 自身是 shebang 脚本，Windows 无法直接 CreateProcess）。
 
 > ⚠️ 本机 **WSL 不可用**，所以 `bash -n` 不可用。改完 shell 脚本后建议用正则做
 > if/fi、case/esac 配平与引号检查（注意：**注释里的撇号**和 `elif` 会被朴素实现误判，
@@ -68,7 +80,7 @@ node <脚本>                               # shell 脚本没有 bash 可用时�
 
 | 文件 | 说明 |
 |---|---|
-| `native/src/core/setup.rs` | **新增**（约 260 行）。`is_rootfs()`（**含 OVERLAYFS `0x794c7630`**）、`tmpfs_mount()`（source 固定 `magisk`）、`bind_mount()`、`recreate_sbin()`、`mount_sbin()`（rootfs / legacy SAR 双分支）、`setup_sbin()` |
+| `native/src/core/setup.rs` | **新增**（约 260 行）。`is_rootfs()`（**含 OVERLAYFS `0x794c7630`**）、`tmpfs_mount()`（source 固定 `magisk`）、`bind_mount()`、`recreate_sbin()`、`mount_sbin()`（rootfs / legacy SAR 双分支）、`setup_sbin()`。**`INTERNAL_DIR` / `DEVICEDIR` 必须是 0711**（对齐 magiskinit，见 §7 坑 8） |
 | `native/src/core/magisk.rs` | `--auto-selinux` 在 argh 之前做 argv 预处理；新增 `--setup-sbin` 子命令（DSTDIR 默认 `/sbin`）；usage 增补 |
 | `native/src/core/lib.rs` | `mod setup;` |
 | `native/src/core/daemon.rs` | 抽出 `pub fn setcon(&Utf8CStr) -> bool`，daemon 启动复用（原先内联） |
@@ -82,7 +94,7 @@ node <脚本>                               # shell 脚本没有 bash 可用时�
 |---|---|
 | `scripts/system_mode.sh` | **新增**（约 370 行）。`magiskrc` / `backup_restore` / `restore_from_bak` / `cleanup_system_installation` / `installer_cleanup` / `direct_install_system` / `install_addond_system` / `xdirect_install_system`（含系统 shell 守卫） |
 | `scripts/util_functions.sh` | 追加 `is_rootfs` / `mkblknode` / `warn_system_ro` / `remount_check` / `force_bind_mount` / `random_str`；`remount_check` 内含失败诊断 `REMOUNT_FAIL` |
-| `scripts/app_functions.sh` | `app_init()` 增加 `SHA1` → `BOOTIMAGE_PATCHED` → `printvar` |
+| `scripts/app_functions.sh` | `app_init()` 增加 `SHA1` → `BOOTIMAGE_PATCHED` → `printvar`；`env_check()` 的 preinit 检查补上 `[ -f "$MAGISKTMP/.magisk/config" ]` 守卫（对齐 Delta，见 §7 坑 9） |
 | `scripts/addon.d.sh` | `SYSTEMINSTALL` 变量 / `system_install()` / `main()` 分支 / 运行时按 `SYSTEMMODE` 自动判定 / trampoline 对 `/system/addon.d/*` 例外 |
 | `scripts/uninstaller.sh` | System Mode 识别 + 清理 `/system/etc/init/magisk*`、还原 `bootanim.rc.gz`、删 `99-magisk.sh` |
 
@@ -91,6 +103,7 @@ node <脚本>                               # shell 脚本没有 bash 可用时�
 | 文件 | 说明 |
 |---|---|
 | `app/core/.../core/Info.kt` | `var isBootPatched`，由 `BOOTIMAGE_PATCHED` 赋值 |
+| `app/core/.../core/AppContext.kt` | libsu Builder 的 `.setTimeout(2)` → `.setTimeout(20)`（**不是**移植引入的缺陷，见 §7 坑 12） |
 | `app/core/.../core/Const.kt` | `FLASH_MAGISK_SYSTEM = "magisk_system"`（**独立 action，勿复用 `FLASH_MAGISK`**） |
 | `app/core/.../core/tasks/MagiskInstaller.kt` | `installSystem()`；`extractFiles()` 增加 `app_functions.sh` / `system_mode.sh`；`class System : ConsoleInstaller` |
 | `app/core/.../core/utils/ShellInit.kt` | root 分支在 `util_functions.sh` **之后**注入 `system_mode.sh` |
@@ -285,12 +298,75 @@ Delta 因为 `test ! -d $addond && return` **写反了**（`test ! -d` 对目录
 `clean_mounts()`，后者按设计卸载 worker。`magiskinit` 建立的同名 tmpfs 也是同样命运，
 对功能无影响。`--setup-sbin` 仍然必须建它（模块 magic-mount 期间需要）。
 
-### 坑 8：其他小雷
+### 坑 8（第二轮发现，最致命）：`DEVICEDIR` 不能是 mode 000
+
+**现象**：装上 System Mode、重启后一切"看起来正常"（`magiskd` root、`/sbin` tmpfs、
+magic-mount 都在），但 App 首页显示 **Magisk 未安装**，安装对话框里
+"直接安装（推荐）"与"直接安装（直接修改 /system）"两行**都消失**；
+命令行 `su -c id` 输出
+`Cannot connect to daemon: Permission denied (os error 13)` + `Illegal instruction`。
+
+**根因链**：daemon socket 在 `$MAGISKTMP/.magisk/device/socket`。
+`setup_sbin()` 照抄 Delta 的 `xmkdir(DEVICEDIR, 0)`，而官方 magiskinit 是
+`xmkdir(DEVICEDIR, 0711)`。UNIX socket 的 `connect()` 要求父目录**可穿越**，
+000 让所有非 root 客户端（manager app 也非 root！）直接吃 `EACCES`：
+`Info.isRooted=false` → 首页未安装 + System Mode 入口被
+`allowSystemInstall = isRooted && !isBootPatched` 隐藏。
+随后 `su.cpp:210` 不校验 `connect_daemon()` 的返回值就把 `fd=-1` 交给
+`write_to_fd()`，Rust `File::from_raw_fd(-1)` panic → SIGILL，所以只看到
+"su 有命令但用不了"。
+
+**修复**：`INTERNAL_DIR` 与 `DEVICEDIR` 都建 `0711`（并 `follow_link().chmod(0o711)`
+兜底）。`WORKERDIR` 保持 `0` + 随后 tmpfs `mode=755`，与 magiskinit 一致。
+
+**给下一个人的提醒**：System Mode 的"验收"不能只看 `magiskd` 在不在、
+magic-mount 有没有——**必须**验证非 root 客户端能否连上 daemon
+（`adb unroot` 后 `su -c id`，或直接看 App 首页是否认出 Magisk）。
+
+### 坑 9：`env_check` 对 System Mode 误报"需要修复运行环境"
+
+`app_functions.sh` 的 `env_check()` 在 `MAGISK_VER_CODE >= 25210` 时无条件要求
+`.magisk/device/preinit`（或 `.magisk/block/preinit`）是块设备。该节点只有
+magiskinit 跑过才有（即 `.magisk/config` 由 ramdisk 恢复的 boot-patch 安装）；
+System Mode 没有 boot patch → 恒返回 **2** → App 弹
+"需要修复运行环境 / 需要重新安装才能使 Magisk 正常工作"。
+
+**修复**：补上 Delta 原有的守卫
+`if [ "$2" -ge 25210 ] && [ -f "$MAGISKTMP/.magisk/config" ]; then`。
+对官方 boot-patch 路径零行为变化。
+
+### 坑 10：模拟器自带的 su 会消失（**不是**本移植造成的）
+
+MuMu 的 `/system/bin/su`、`/system/xbin/su` 在 System Mode 安装后会从 /system 上
+消失。已排除本仓库代码（安装路径上没有任何删 su 的语句；`remove_system_su` 只在
+`flash_script.sh`/`addon.d.sh` 调用），也排除了"模拟器开机删 su"（手工放的
+`/system/bin/su` 重启后仍存在）。MuMu 自己的 `nemu_sys_opt` / `NewFileUpdater`
+负责投送 su，其 telemetry 里此时为 `"root_enabled": false`。
+
+**结论**：模拟器侧既有行为。安装后 root 由 MagiskSU 接管；`adb root` 始终可用，
+所以**永远救得回来**（`adb root` → 删 `/system/etc/init/magisk*` 与
+`/data/adb/magisk*` → 重启）。
+
+### 坑 11：其他小雷
 
 - rootfs 分支的 `link_path` 在 `/sbin` 为空时会打印 `linkat ... EXDEV`，**无害噪音**。
 - `su -c '...'` 在部分 emulator 上被穿透引号，用 `su 0 sh <脚本>`。
 - `magiskinit` 的 `--patch-sepol` 必须在 `getpid() == 1` 判断**之前**，否则非 1 号进程直接返回。
 - `setcon` 的 `$?` 类陷阱：`X=$(...); echo rc=$?` 取到的是赋值的退出码，不是命令的。
+
+### 坑 12：App 首次启动识别不到 root（官方共有缺陷，已单独修）
+
+`AppContext.kt:93` 的 `.setTimeout(2)` 让 libsu 的 **shell check** 只有 2 秒；
+需要弹窗授权的 su（模拟器自带 su、第三方 root）必然超时 → libsu 回退并**永久缓存
+一个非 root shell** → `Info.isRooted=false`，App 显示"未安装"、System Mode 入口消失，
+**关掉 App 再打开**才能恢复。libsu 自己的默认值是 20 秒。
+
+**修复**：`.setTimeout(2)` → `.setTimeout(20)`。A/B 实测（5 秒延迟的 su）与细节见
+`docs/system_mode_verification.md` §8.7。
+
+这条与 System Mode 无关、属于上游共有行为，已单独做成干净分支
+`fix-shell-check-timeout`（基于 `aed0261c3`，仅 1 行）并推到 origin，
+供用户开 issue / PR；`master` 工作区里也改了同一行但**未提交**。
 
 ---
 
@@ -303,8 +379,10 @@ Delta 因为 `test ! -d $addond && return` **写反了**（`test ! -d` 对目录
 | OTA 存活闭环 | 未实测 | 需要可刷 OTA 的 ROM；脚本落盘与 `SYSTEMINSTALL=true` 已验证 |
 | `uninstaller.sh` 的 System Mode 分支 | 未实测 | 需要先有安装再执行卸载 |
 | 32 位-only 设备分支 | 未实测 | 逻辑上是 `magisk32` 缺失时容错 |
-| 模块 magic-mount 完整回归 | 部分 | 已确认 `/system/bin` 出现注入 tmpfs，未装真实模块跑一遍 |
+| 模块 magic-mount 完整回归 | 部分 | 已确认 `/system/xbin`（或 `/system/bin`）出现注入 tmpfs，未装真实模块跑一遍 |
 | Zygisk 开关 | 部分 | App 侧能改写该设置，未验证实际注入 |
+| **App 首次启动的 root 识别** | **已修** | `.setTimeout(2)` → `20`；干净分支 `fix-shell-check-timeout` 已推送（见 §7 坑 12、verification §8.7） |
+| MuMu 自带 su 消失 | 已定性 | 模拟器侧行为，见 §7 坑 10；恢复靠 `adb root` |
 
 **下一步最该做的**：在一个干净 AVD 上走完整 App 流程（点安装 → 重启 → `su` 到手），
 再装一个真实模块验证 magic-mount，最后测卸载。
@@ -313,8 +391,10 @@ Delta 因为 `test ! -d $addond && return` **写反了**（`test ! -d` 对目录
 
 ## 9. 给下一个 AI 的工作约定
 
-1. **不要 git commit / amend**，除非用户明确要求。
-2. 独立执行 `gradlew` / `cargo` / `rustc` / `ndk-build` **必须**加 `scripts/env.py` 前缀。
+1. **不要 git commit / amend**，除非用户明确要求。**唯一的例外**：用户已明确要求并批准
+   的干净上游修复分支 `fix-shell-check-timeout`（已推送，勿在其上追加移植内容）。
+2. 独立执行 `gradlew` / `cargo` / `rustc` / `ndk-build` **必须**加 `scripts/env.py` 前缀；
+   **Windows 上写成 `python scripts/env.py python ./build.py <target>`**（见 §1 与下方注意事项）。
 3. 改 `native/` 前先读 `.agents/skills/magisk-native/SKILL.md`；改 `app/` 前先读 `.agents/skills/magisk-app/SKILL.md`。
 4. 每完成一步**实际编译验证**，不要写完就宣称完成。
 5. 涉及 `/system` 写入的路径**必须有失败回滚**（sepolicy 的 `.gz` 还原、rc 的删除/还原）。
@@ -323,11 +403,18 @@ Delta 因为 `test ! -d $addond && return` **写反了**（`test ! -d` 对目录
 
 ### 本机环境注意事项
 
+- **Windows 上必须用 `python scripts/env.py python ./build.py <target>`**。
+  直接写 `scripts/env.py ./build.py app` 会被 Windows 按 `.py` 文件关联交给
+  PyCharm 打开（表现为"命令 exit=0 / IDE 被拉起来"，实际什么都没编译）。
 - **工作区里有多台模拟器**（`adb devices` 可见若干 `emulator-55xx` 与 `127.0.0.1:16xxx`）。
   其中几台**已经被我装过 System Mode**：`/system/etc/init/magisk*` 存在、
   `magiskd` 在跑、**原有 `su` 会被 Magisk 接管**（表现为 `su: inaccessible or not found`）。
   这是**预期状态，不是 bug**。需要干净环境时换一台未使用的实例。
 - 这些模拟器上 `/system` 是占位块设备（如 `/dev/block/sda6`，ext4 rw），
   `/` 是 tmpfs(ro)；`is_rootfs` 会判为 true，走 rootfs 分支。
+- `ro.kernel.qemu` / `ro.boot.qemu` / `ro.product.device` 在这些模拟器上**都识别不出是模拟器**
+  （例如 `ro.product.device` 是 `Draco` / `Piaget`），所以
+  `module.rs` 里 "emulator 时保留 `/system/xbin/su`" 的分支**不会**生效，
+  Magisk 会直接注入 `/system/xbin`（或 `/system/bin`）并接管 `su`。
 - `WSL` 不可用 → 没有 `bash`/`bash -n`；shell 脚本检查要靠自写脚本或人工核对。
 - 改完 shell 脚本记得重跑 `build.py app`（脚本是 APK 资产，不打进去改动不生效）。

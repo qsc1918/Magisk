@@ -13,6 +13,10 @@ Magisk（HEAD `aed0261c3`），Native / Shell / App 三层全部接通。
 在真实 Android 12（API 32）x86_64 模拟器上完成了端到端验证：安装 → 重启 →
 `magiskd` 以 root 运行 → 模块挂载与 su 授权可用 → 无 bootloop。
 
+第二轮设备验证（2026-09-25，用户报告"装完 App 显示 Magisk 未安装 / su 用不了"）定位并修复了
+两个**只在 System Mode 下才会暴露**的缺陷：`.magisk/device` 权限位错误（Native）与
+`env_check` 的 preinit 误报（Shell）。详见 §8。
+
 ---
 
 ## 2. 新增与修改的文件
@@ -267,3 +271,197 @@ adb shell ps -A | grep magiskd                # 期望 root 用户
 adb shell ls -la /sbin/.magisk                # 期望 device/modules/worker/busybox
 adb shell mount | grep magisk                 # 期望 /sbin + /system/bin 注入
 ```
+
+> ⚠️ 本机 Windows 上 **不要**直接执行 `scripts/env.py ...`：`.py` 的文件关联是 PyCharm，
+> 直接运行会把 IDE 拉起来（看起来像"构建成功"，实际什么都没编译）。必须写成
+> `python scripts/env.py python ./build.py native`。
+
+---
+
+## 8. 第二轮验证：App 不认 root / "需要修复运行环境"（2026-09-25）
+
+### 8.1 症状（用户报告 + 复现）
+
+在干净的 MuMu 模拟器（Android 12 / API 32 / x86_64）上用 App 点
+"直接安装（直接修改 /system）"，安装过程本身 `All done!`；重启后：
+
+- App 首页 Magisk 卡片显示**未安装**（根因 2 修复前还会弹
+  "需要修复运行环境 / 需要重新安装才能使 Magisk 正常工作"）；
+- 安装对话框只剩"选择并修补文件 / 下载并修补映像"两行，
+  **"直接安装（推荐）" 与 "直接安装（直接修改 /system）" 都消失**；
+- `magiskd` 确实以 root 在跑、`/sbin` tmpfs 与 magic-mount 都正常；
+- 但 `su` 用不了：`su -c id` 输出
+  `Cannot connect to daemon: Permission denied (os error 13)` 紧接
+  `Illegal instruction`（SIGILL）。
+
+### 8.2 根因 1（Native）：`DEVICEDIR` 被建成 mode 000
+
+`native/src/core/setup.rs` 的 `setup_sbin()` 照抄了 Delta `--setup-sbin` 的
+`xmkdir(DEVICEDIR, 0)`，而官方 magiskinit 的 `setup_tmp()` 是
+`xmkdir(INTLROOT, 0711); xmkdir(DEVICEDIR, 0711);`。
+
+daemon 的 socket 在 `$MAGISKTMP/.magisk/device/socket`（`MAIN_SOCKET`）。
+UNIX socket 的 `connect()` 需要**父目录可穿越（x 位）**，mode 000 直接导致
+非 root 客户端（manager app、adb shell、任何 App）拿到 `EACCES`：
+
+```
+$ ls -lad /sbin/.magisk/device          # 修复前
+d--------- 2 root root 80 ... /sbin/.magisk/device
+$ su 0 id
+Cannot connect to daemon: Permission denied (os error 13)
+Illegal instruction                      # su.cpp:210 未校验 fd，Rust from_raw_fd(-1) panic
+```
+
+`su.cpp` 只打印错误、随后仍把 `fd = -1` 交给 `write_to_fd()`，Rust 侧
+`File::from_raw_fd(-1)` panic（panic=abort）→ `SIGILL`。因此 App 拿不到 root
+（`Info.isRooted=false`）→ 首页"未安装"、System Mode 入口被
+`allowSystemInstall = isRooted && !isBootPatched` 隐藏。
+
+**修复**（`native/src/core/setup.rs`）：`INTERNAL_DIR` 与 `DEVICEDIR` 都按官方
+magiskinit 建成 `0711`，并额外 `chmod` 一次以兼容旧安装残留。
+
+### 8.3 根因 2（Shell）：`env_check` 的 preinit 误报
+
+`scripts/app_functions.sh` 的 `env_check()` 对 `MAGISK_VER_CODE >= 25210`
+无条件要求 `.magisk/device/preinit`（或 `.magisk/block/preinit`）是块设备。
+该节点只在 magiskinit 跑过（= boot 镜像 patch 安装、`.magisk/config` 由 ramdisk
+恢复）时才存在；System Mode 没有 boot patch、没有 `.magisk/config`，于是
+`env_check` 恒返回 **2**：
+
+```
+$ env_check <ver> 31000 ; echo rc=$?    # 修复前
+rc=2
+```
+
+App 侧 `HomeViewModel.ensureEnv()` 把 `code != 0` 直接映射成
+"需要修复运行环境"弹窗 → 用户看到"Magisk 没装好"。
+
+Delta 在同一处有 `&& [ -f "$MAGISKTMP/.magisk/config" ]` 守卫（见
+`D:\a\KitsuneMagisk\app\src\main\res\raw\manager.sh` 的 `env_check`），本仓库移植时漏掉了。
+
+**修复**（`scripts/app_functions.sh`）：补上守卫，语义为"只有 boot-patch 安装才要求
+preinit 节点"。对官方安装路径零行为变化（`.magisk/config` 一定存在）。
+
+### 8.4 实测证据（修复后，同一台 MuMu 模拟器）
+
+```
+# 1) setup-sbin 的目录权限（直接对空 tmpfs 跑新二进制）
+$ magisk --setup-sbin /system/etc/init/magisk /data/local/tmp/sbtest   # rc=0
+drwx--x--x  ... /data/local/tmp/sbtest/.magisk
+drwx--x--x  ... /data/local/tmp/sbtest/.magisk/device
+
+# 2) App 全流程安装 + 重启后
+$ ps -A | grep magiskd
+root  1089  1  ... S magiskd
+$ ls -lad /sbin/.magisk/device
+drwx--x--x 2 root root 80 ... /sbin/.magisk/device
+$ ls -la /sbin/.magisk/device
+srw-rw-rw- 1 root root 0 ... socket      # u:object_r:magisk_file:s0
+$ mount | grep magisk
+magisk on /sbin type tmpfs ...
+magisk on /system/xbin type tmpfs ...
+$ env_check 0c4f3240 31000 ; echo rc=$?
+rc=0
+$ su -c id                       # 以 adb shell(uid 2000) 发起
+uid=0(root) gid=0(root) groups=0(root) context=u:r:magisk:s0
+```
+
+App 侧：首页 Magisk 卡片由"未安装"变为 **`0c4f3240 (31000) (D)`**，
+"需要修复运行环境"弹窗不再出现，底部出现 `模块 / 超级用户` 页；
+"超级用户"页能读出 `com.android.shell` 条目并切换授权（= 已通过 daemon 获得 root）。
+
+**两条完整路径都验证过**：
+
+1. **shell 手工路径**：`adb root` + `xdirect_install_system` → 重启 → 全部达标；
+2. **App 路径（用户实际流程）**：App "直接安装（直接修改 /system）" →
+   `All done!` → 重启 → 全部达标（此时 root 由 MagiskSU 提供，说明
+   `installSystem()` 的 Kotlin bootstrap 在 MagiskSU 下也工作）。
+
+### 8.5 观察：模拟器自带的 `su` 会消失
+
+MuMu 的 `/system/bin/su`、`/system/xbin/su`（setuid）在 System Mode 安装后
+**会从 /system 分区上消失**，与本仓库代码无关：
+
+- 这两条路径上没有任何 `rm`（`system_mode.sh` / `app_functions.sh` /
+  `util_functions.sh` / `remove_system_su` 都不在此调用路径上；
+  `remove_system_su` 只在 `flash_script.sh` / `addon.d.sh` 里调用）；
+- **实验**：手工把一个 `su`（`cp fstrim /system/bin/su`）放进 /system 后重启，
+  文件**存活** → 模拟器并非"开机删除 su"；
+- MuMu 自己的 telemetry 里有 `"root_enabled": false` 字段，其 `nemu_sys_opt` /
+  `NewFileUpdater`（hot-update）负责投送 `su`；`/system` 被本安装改动后，
+  它不再投送自己的 su，于是系统自带的 root 入口消失。
+
+结论：**这是模拟器侧的既有行为，不是移植缺陷**。安装后 root 由 MagiskSU 接管，
+`adb root` 也始终可用（恢复手段：`adb root` → 删 `/system/etc/init/magisk*` 与
+`/data/adb/magisk*` → 重启）。若 MagiskSU 因故不可用，用户仍能通过 `adb root` 救回。
+
+### 8.6 编译验证
+
+| 命令 | 结果 |
+|---|---|
+| `python scripts/env.py python ./build.py native` | exit=0 |
+| `python scripts/env.py python ./build.py clippy` | exit=0，零警告 |
+| `python scripts/env.py python ./build.py app` | exit=0，`out/app-debug.apk`（assets 内 `app_functions.sh` 已含守卫） |
+| `python scripts/env.py python ./build.py app-legacy` | exit=0，`out/apk-legacy-debug.apk` |
+
+### 8.7 第三个缺陷：App 首次启动识别不到 root（libsu shell check 超时）
+
+**症状（用户报告）**：在干净模拟器上首次运行 App、授予 root 权限后，App 仍显示
+"Magisk 未安装"、安装页没有"直接安装（直接修改 /system）"；**关掉 App 再打开**就正常。
+
+**根因**：`AppContext.kt:89-93` 给 libsu 的 Builder 设了 `.setTimeout(2)`（2 秒），
+并在 `AppContext.kt:102` 用 `Shell.getShell(null) {}` 在启动瞬间预热 root shell。
+libsu 6.0.0 的实现（反编译 `BuilderImpl` / `ShellImpl` 确认）：
+
+- Builder 的 timeout 默认值就是 **20 秒**（`BuilderImpl.<init>`: `ldc2_w 20l`），
+  Magisk 主动改成了 2；
+- `ShellImpl` 构造时用 `FutureTask.get(timeout, SECONDS)` 等 **shell check**
+  （判断拿到的 shell 是不是 root），超时抛 `IOException("Shell check timeout")`；
+- `BuilderImpl.exec()` 把 `IOException` 转成 `NoShellException`，
+  `start()` 捕获后**丢弃这次 su 尝试**，最终回退到 `sh` —— 即一个**非 root shell**，
+  并被 `MainShell` 缓存为进程内的主 shell（没有公开 API 可以作废它）。
+
+设备自带 `su` 时（模拟器/容器/第三方 root），授权需要**弹窗**，用户不可能 2 秒内点完 →
+超时 → 缓存非 root shell → `Info.isRooted=false` 一直到进程结束。
+
+**修复**：`.setTimeout(2)` → `.setTimeout(20)`（= libsu 默认值）。
+
+**A/B 实测**（同一台设备、同一个 5 秒延迟的 su，只换 APK）：
+
+```sh
+# 造一个"慢 su"模拟授权弹窗：包一层 sleep 5 再 exec MagiskSU
+cat > /system/bin/su <<'EOF'
+#!/system/bin/sh
+sleep 5
+exec /system/xbin/su "$@"
+EOF
+chmod 755 /system/bin/su
+su -c id            # 5s 后返回 uid=0 (u:r:magisk:s0)
+```
+
+| APK | 冷启动后首页 Magisk 卡片 | 底部页签 |
+|---|---|---|
+| `setTimeout(2)`（修复前） | **未安装** | 只有 主页/日志/设置 |
+| `setTimeout(20)`（修复后） | **0c4f3240 (31000) (D)** | 出现 模块 / 超级用户 |
+
+（修复后那次还顺带弹了"检测到不属于 Magisk 的 su 文件"，因为测试用的包装 su 放在
+`/system/bin` 且该目录没有 `magisk` —— 正好反证 `Info.env.isActive == true`，
+即 App 这次确实拿到并确认了 root。移除包装 su 后弹窗消失，状态保持已安装。）
+
+### 8.8 干净的上游修复分支
+
+本缺陷属于**官方共有行为**（与 System Mode 无关），已按官方规范单独做成一个干净分支，
+便于给上游开 issue / PR：
+
+- 分支：`fix-shell-check-timeout`（基于官方提交 `aed0261c3`，
+  **不含**任何 System Mode 移植代码与 AI 文档）
+- 提交：`70691a1b3 Increase shell check timeout to libsu default`
+  （仅 1 文件 1 行；50/72 格式；带 `Assisted-by:` trailer）
+- 已推送到 `origin`（`https://github.com/qsc1918/Magisk.git`），
+  PR 入口：`https://github.com/qsc1918/Magisk/pull/new/fix-shell-check-timeout`
+- 当前 `master` 工作区里**也改了同一行**（未提交，遵守 AGENTS.md）。
+
+> `tools/futility` 是仓库既有的 dirty 文件，未被本分支的提交包含
+> （在干净 worktree 里 checkout 会因行尾过滤显示为 modified，注意不要 `git add -A`）。
+
+

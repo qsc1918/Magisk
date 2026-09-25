@@ -221,8 +221,15 @@ pub fn setup_sbin(src: &Utf8CStr, dst: &Utf8CStr) -> bool {
         // Relative paths below are resolved against the tmpfs root
         std::env::set_current_dir(dst.as_str()).log()?;
 
-        cstr!(INTERNAL_DIR).mkdir(0o755)?;
-        cstr!(DEVICEDIR).mkdir(0o000).log_ok();
+        // Same modes as magiskinit's setup_tmp(): everybody needs to be able
+        // to *traverse* .magisk/device to reach the daemon socket, but nobody
+        // except root may list it. Creating DEVICEDIR with mode 0 (as Delta's
+        // --setup-sbin did) makes every non-root su client fail with
+        // "Cannot connect to daemon: Permission denied".
+        cstr!(INTERNAL_DIR).mkdir(0o711)?;
+        cstr!(INTERNAL_DIR).follow_link().chmod(0o711).log_ok();
+        cstr!(DEVICEDIR).mkdir(0o711).log_ok();
+        cstr!(DEVICEDIR).follow_link().chmod(0o711).log_ok();
         cstr!(WORKERDIR).mkdir(0o000).log_ok();
 
         // magiskinit normally prepares the worker tmpfs; System Mode has no

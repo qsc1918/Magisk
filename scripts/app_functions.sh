@@ -17,7 +17,12 @@ env_check() {
   if [ "$2" -ge 25000 ]; then
     [ -f "$MAGISKBIN/magiskpolicy" ] || return 1
   fi
-  if [ "$2" -ge 25210 ]; then
+  # The preinit device node only exists when magiskinit ran (i.e. Magisk was
+  # installed by patching the boot image and .magisk/config was restored from
+  # the ramdisk). A System Mode install has no boot patch, hence no
+  # .magisk/config and no preinit node; requiring one would make the app report
+  # a broken environment ("Require fix environment") forever.
+  if [ "$2" -ge 25210 ] && [ -f "$MAGISKTMP/.magisk/config" ]; then
     [ -b "$MAGISKTMP/.magisk/device/preinit" ] || [ -b "$MAGISKTMP/.magisk/block/preinit" ] || return 2
   fi
   grep -xqF "MAGISK_VER='$1'" "$MAGISKBIN/util_functions.sh" || return 3
